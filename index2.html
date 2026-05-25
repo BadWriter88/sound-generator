@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>音合成シミュレーター</title>
+<style>
+    body { font-family: sans-serif; background-color: #f0f4f8; padding: 20px; text-align: center; }
+    .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+    h1 { color: #333; font-size: 24px; margin-bottom: 20px; }
+    
+    .oscillator { border: 2px solid #e2e8f0; border-radius: 8px; padding: 15px; margin-bottom: 15px; text-align: left; background: #fafafa; }
+    .osc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+    .osc-header h3 { margin: 0; color: #0056b3; }
+    
+    .control-group { margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 5px; }
+    input[type="number"] { width: 80px; padding: 5px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; text-align: right; }
+    input[type="range"] { flex-grow: 1; margin: 0 10px; }
+    .value-display { font-weight: bold; width: 50px; text-align: right; }
+    
+    /* 符号切り替えボタンのスタイル */
+    .btn-sign { width: 40px; height: 32px; font-size: 16px; font-weight: bold; background-color: #e9ecef; border: 1px solid #ced4da; border-radius: 4px; cursor: pointer; color: #495057; }
+    .btn-sign:hover { background-color: #dde2e6; }
+    .btn-sign.negative { background-color: #dc3545; color: white; border-color: #dc3545; }
+
+    /* 波形切り替えボタンのスタイル */
+    .wave-group { display: flex; gap: 5px; flex-wrap: wrap; }
+    .btn-wave { padding: 6px 12px; font-size: 14px; border: 1px solid #0056b3; background-color: white; color: #0056b3; border-radius: 4px; cursor: pointer; transition: all 0.2s; }
+    .btn-wave:hover { background-color: #e2eafc; }
+    .btn-wave.active { background-color: #0056b3; color: white; font-weight: bold; }
+
+    .btn-play { background-color: #28a745; color: white; border: none; padding: 15px 40px; font-size: 20px; border-radius: 5px; cursor: pointer; font-weight: bold; margin-top: 10px; width: 100%; box-sizing: border-box; }
+    .btn-play.playing { background-color: #dc3545; }
+    
+    .btn-add { background-color: #007bff; color: white; border: none; padding: 10px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; margin-bottom: 20px; width: 100%; box-sizing: border-box; }
+    .btn-add:hover { background-color: #0056b3; }
+    
+    .btn-remove { background-color: #6c757d; color: white; border: none; padding: 5px 10px; font-size: 14px; border-radius: 4px; cursor: pointer; }
+    .btn-remove:hover { background-color: #5a6268; }
+</style>
+</head>
+<body>
+
+<div class="container">
+    <h1>音合成シミュレーター</h1>
+    
+    <button id="addBtn" class="btn-add" onclick="addOscillator()">＋ 音を追加</button>
+
+    <div id="oscillators-container"></div>
+
+    <button id="playBtn" class="btn-play">▶ 再生する</button>
+</div>
+
+<script>
+    let audioCtx;
+    let activeNodes = {}; 
+    let isPlaying = false;
+    let nextId = 1;
+
+    // 波形ボタンの切り替え処理
+    function setWaveType(id, waveType, btnElement) {
+        // 見えない入力欄（hidden input）の値を更新
+        document.getElementById('t-' + id).value = waveType;
+        
+        // すべてのボタンから active クラスを外す
+        const group = document.getElementById('wg-' + id);
+        const buttons = group.getElementsByClassName('btn-wave');
+        for (let btn of buttons) {
+            btn.classList.remove('active');
+        }
+        
+        // 押されたボタンに active クラスを付ける（青くする）
+        btnElement.classList.add('active');
+
+        // 再生中なら即座に波形を変更する
+        if (isPlaying && activeNodes[id]) {
+            activeNodes[id].osc.type = waveType;
+        }
+    }
+
+    // 符号ボタンの切り替え処理
+    function toggleSign(id) {
+        const btn = document.getElementById('sign-' + id);
+        if (btn.innerText === '＋') {
+            btn.innerText = '－';
+            btn.classList.add('negative');
+        } else {
+            btn.innerText = '＋';
+            btn.classList.remove('negative');
+        }
+        updateVol(id); 
+    }
+
+    // スライダーの数値を表示更新＆音量（位相）反映
+    function updateVol(id) {
+        const volVal = parseFloat(document.getElementById('v-' + id).value);
+        const signBtn = document.getElementById('sign-' + id);
+        
+        const sign = signBtn.innerText === '－' ? -1 : 1;
+        const finalVol = volVal * sign;
+
+        document.getElementById('vd-' + id).innerText = finalVol;
+
+        if (isPlaying && activeNodes[id]) {
+            activeNodes[id].gain.gain.value = finalVol / 100;
+        }
+    }
+
+    // 周波数の変更を反映
+    function updateFreq(id) {
+        const freqVal = document.getElementById('f-' + id).value;
+        if (isPlaying && activeNodes[id]) {
+            activeNodes[id].osc.frequency.value = parseFloat(freqVal);
+        }
+    }
+
+    // 新しいオシレーターのUIを追加
+    function addOscillator() {
+        const id = nextId++;
+        const container = document.getElementById('oscillators-container');
+        
+        const div = document.createElement('div');
+        div.className = 'oscillator';
+        div.id = `osc-${id}`;
+        
+        const defaultFreq = id * 100;
+
+        // プルダウンを廃止し、波形切り替えボタン（wave-group）を配置
+        div.innerHTML = `
+            <div class="osc-header">
+                <h3>音 ${id}</h3>
+                <button class="btn-remove" onclick="removeOscillator(${id})">削除</button>
+            </div>
+            <div class="control-group">
+                <label>波形: </label>
+                <div class="wave-group" id="wg-${id}">
+                    <button class="btn-wave active" onclick="setWaveType(${id}, 'sine', this)">サイン</button>
+                    <button class="btn-wave" onclick="setWaveType(${id}, 'sawtooth', this)">ノコギリ</button>
+                    <button class="btn-wave" onclick="setWaveType(${id}, 'square', this)">矩形</button>
+                    <button class="btn-wave" onclick="setWaveType(${id}, 'triangle', this)">三角</button>
+                </div>
+                <input type="hidden" id="t-${id}" value="sine">
+            </div>
+            <div class="control-group">
+                <label>周波数 (Hz): </label>
+                <input type="number" id="f-${id}" value="${defaultFreq}" step="1" oninput="updateFreq(${id})">
+            </div>
+            <div class="control-group">
+                <label>音量 (%): </label>
+                <button id="sign-${id}" class="btn-sign" onclick="toggleSign(${id})">＋</button>
+                <input type="range" id="v-${id}" min="0" max="100" value="100" oninput="updateVol(${id})">
+                <span class="value-display" id="vd-${id}">100</span>
+            </div>
+        `;
+        container.appendChild(div);
+
+        updateVol(id);
+
+        if (isPlaying) {
+            startSingleOscillator(id);
+        }
+    }
+
+    function removeOscillator(id) {
+        if (isPlaying && activeNodes[id]) {
+            activeNodes[id].osc.stop();
+            activeNodes[id].osc.disconnect();
+            activeNodes[id].gain.disconnect();
+            delete activeNodes[id];
+        }
+        const el = document.getElementById(`osc-${id}`);
+        if (el) el.remove();
+    }
+
+    function startSingleOscillator(id, startTime = 0) {
+        if (!audioCtx) return;
+        
+        const typeInput = document.getElementById(`t-${id}`);
+        const freqInput = document.getElementById(`f-${id}`);
+        const volInput = document.getElementById(`v-${id}`);
+        const signBtn = document.getElementById(`sign-${id}`);
+        
+        if (!freqInput || !volInput || !typeInput || !signBtn) return;
+
+        const waveType = typeInput.value;
+        const freq = parseFloat(freqInput.value);
+        
+        const sign = signBtn.innerText === '－' ? -1 : 1;
+        const vol = (parseFloat(volInput.value) * sign) / 100;
+
+        let osc = audioCtx.createOscillator();
+        let gainNode = audioCtx.createGain();
+
+        osc.type = waveType; 
+        osc.frequency.value = freq;
+        gainNode.gain.value = vol; 
+
+        osc.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+
+        if (startTime === 0) {
+            osc.start();
+        } else {
+            osc.start(startTime);
+        }
+
+        activeNodes[id] = { osc: osc, gain: gainNode };
+    }
+
+    document.getElementById('playBtn').addEventListener('click', function() {
+        if (!isPlaying) {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+
+            let startTime = audioCtx.currentTime + 0.1;
+
+            const oscDivs = document.querySelectorAll('.oscillator');
+            oscDivs.forEach(div => {
+                const id = parseInt(div.id.replace('osc-', ''));
+                startSingleOscillator(id, startTime);
+            });
+
+            this.innerText = "■ 停止する";
+            this.classList.add("playing");
+            isPlaying = true;
+        } else {
+            for (let id in activeNodes) {
+                activeNodes[id].osc.stop();
+                activeNodes[id].osc.disconnect();
+                activeNodes[id].gain.disconnect();
+            }
+            activeNodes = {}; 
+            
+            this.innerText = "▶ 再生する";
+            this.classList.remove("playing");
+            isPlaying = false;
+        }
+    });
+
+    window.onload = () => {
+        addOscillator();
+    };
+</script>
+</body>
+</html>
